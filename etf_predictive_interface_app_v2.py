@@ -246,7 +246,17 @@ if run:
     st.subheader("Forecast")
     grouped = result.groupby("Ticker", as_index=False).agg({"Current Value": "sum", "Amount Invested": "sum"})
     forecast_rows = []
-    chart = go.Figure()
+    per_ticker_chart = go.Figure()
+
+    # Portfolio-level monthly paths. These combine every selected stock/ETF into one total forecast.
+    total_expected_path = None
+    total_conservative_path = None
+    total_optimistic_path = None
+    total_contribution_path = []
+    months_total = int(round(forecast_years * 12))
+    total_forecast_dates = pd.date_range(today, periods=months_total, freq="ME")
+    starting_portfolio_value = total_value
+    starting_capital_contributed = total_invested
 
     for _, row in grouped.iterrows():
         ticker = row["Ticker"]
@@ -284,8 +294,19 @@ if run:
             })
 
         _, path = project_value(current_value, ticker_monthly, base_return, forecast_years)
+        _, low_path = project_value(current_value, ticker_monthly, conservative, forecast_years)
+        _, high_path = project_value(current_value, ticker_monthly, optimistic, forecast_years)
+
+        path = np.array(path, dtype=float)
+        low_path = np.array(low_path, dtype=float)
+        high_path = np.array(high_path, dtype=float)
+
+        total_expected_path = path if total_expected_path is None else total_expected_path + path
+        total_conservative_path = low_path if total_conservative_path is None else total_conservative_path + low_path
+        total_optimistic_path = high_path if total_optimistic_path is None else total_optimistic_path + high_path
+
         x = pd.date_range(today, periods=len(path), freq="ME")
-        chart.add_trace(go.Scatter(x=x, y=path, mode="lines", name=ticker))
+        per_ticker_chart.add_trace(go.Scatter(x=x, y=path, mode="lines", name=ticker))
 
     forecast_df = pd.DataFrame(forecast_rows)
     st.dataframe(
@@ -299,13 +320,61 @@ if run:
         use_container_width=True,
     )
 
-    chart.update_layout(
-        title=f"Projected value over {forecast_years} years",
-        xaxis_title="Date",
-        yaxis_title="Projected value",
-        height=520,
-    )
-    st.plotly_chart(chart, use_container_width=True)
+    # Build the unified total portfolio forecast graph.
+    if total_expected_path is not None and len(total_expected_path) > 0:
+        for m in range(1, months_total + 1):
+            total_contribution_path.append(starting_capital_contributed + monthly_contribution * m)
+
+        total_chart = go.Figure()
+        total_chart.add_trace(go.Scatter(
+            x=total_forecast_dates,
+            y=total_expected_path,
+            mode="lines",
+            name="Total portfolio forecast"
+        ))
+        total_chart.add_trace(go.Scatter(
+            x=total_forecast_dates,
+            y=total_conservative_path,
+            mode="lines",
+            name="Conservative total"
+        ))
+        total_chart.add_trace(go.Scatter(
+            x=total_forecast_dates,
+            y=total_optimistic_path,
+            mode="lines",
+            name="Optimistic total"
+        ))
+        total_chart.add_trace(go.Scatter(
+            x=total_forecast_dates,
+            y=total_contribution_path,
+            mode="lines",
+            name="Total money invested/contributed"
+        ))
+        total_chart.update_layout(
+            title=f"Unified total portfolio forecast over {forecast_years} years",
+            xaxis_title="Date",
+            yaxis_title="Total projected portfolio value",
+            height=560,
+        )
+        st.subheader("Unified total investment growth forecast")
+        st.plotly_chart(total_chart, use_container_width=True)
+
+        ending_expected = float(total_expected_path[-1])
+        ending_contributed = float(total_contribution_path[-1])
+        expected_profit = ending_expected - ending_contributed
+        m1, m2, m3 = st.columns(3)
+        m1.metric(f"Projected value in {forecast_years} years", f"${ending_expected:,.2f}")
+        m2.metric("Total contributed by then", f"${ending_contributed:,.2f}")
+        m3.metric("Projected gain vs contributions", f"${expected_profit:,.2f}", f"{expected_profit / ending_contributed:.2%}" if ending_contributed else None)
+
+    with st.expander("Show per-stock forecast graph"):
+        per_ticker_chart.update_layout(
+            title=f"Per-stock projected value over {forecast_years} years",
+            xaxis_title="Date",
+            yaxis_title="Projected value",
+            height=520,
+        )
+        st.plotly_chart(per_ticker_chart, use_container_width=True)
 
     st.subheader("Ticker charts")
     for ticker in all_tickers:
